@@ -1,4 +1,4 @@
-/* USB UAC Mic
+/* USB UAC I2S PHILIPS Mic
  * SPDX-FileCopyrightText: 2010-2022 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: CC0-1.0
@@ -26,7 +26,7 @@
 #define SPEAKER_I2S_LRC   21
 #define SPEAKER_SD_MODE   12
 
-// static const char *TAG = "usb_uac_main";
+// static const char *TAG = "USB_MIC";
 
 static i2s_chan_handle_t rx_handle;
 static i2s_chan_handle_t tx_handle;
@@ -35,6 +35,15 @@ static bool is_muted = false;
 // volume is in dB
 static uint32_t volume = 0;
 static uint32_t volume_factor = 100;
+
+static esp_err_t uac_device_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *arg) { // Microphone
+    if(!rx_handle) {
+        return ESP_FAIL;
+    }
+    // uint8_t *rx_buffer = (uint8_t *) malloc(READ_BUF_SIZE_BYTES);
+    
+    return i2s_channel_read(rx_handle, buf, len, bytes_read, portMAX_DELAY); // portMAX_DELAY
+}
 
 static esp_err_t uac_device_output_cb(uint8_t *buf, size_t len, void *arg) { // Speaker
     if (!tx_handle) {
@@ -77,20 +86,8 @@ static esp_err_t uac_device_output_cb(uint8_t *buf, size_t len, void *arg) { // 
     return ESP_OK;
 }
 
-static esp_err_t uac_device_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *arg) { // Mic
-    if(!rx_handle) {
-        return ESP_FAIL;
-    }
-    // uint8_t *rx_buffer = (uint8_t *) malloc(READ_BUF_SIZE_BYTES);
-    return i2s_channel_read(rx_handle, buf, len, bytes_read, portMAX_DELAY); // portMAX_DELAY
-}
-
-static void uac_device_set_mute_cb(uint32_t mute, void *arg) {
-    is_muted = mute;
-}
-
 static void uac_device_set_volume_cb(uint32_t _volume, void *arg) {
-    // see here for what is going on here: https://github.com/espressif/esp-iot-solution/blob/36d8130e8e880720108de2c31ce0779827b1bcd9/components/usb/usb_device_uac/usb_device_uac.c#L259
+    // see here for what is going on here: https://github.com/espressif/esp-iot-solution/blob/master/components/usb/usb_device_uac/usb_device_uac.c#L259
     // _volume = (volume_db + 50) * 2
     // when _volume is 100 %, volume_db is 0. When _volume is 0%, volume_db is -50 or 0.00001
     
@@ -99,14 +96,16 @@ static void uac_device_set_volume_cb(uint32_t _volume, void *arg) {
     // volume_factor ranges from 1 to 10E-2.5
 
     // Windows volume behaviour, at 1 -> -60dB, at 0 -> -96dB, 100 -> +30dB
-    // 
+}
+
+static void uac_device_set_mute_cb(uint32_t mute, void *arg) {
+    is_muted = mute;
 }
 
 static void usb_uac_device_init(void) {
     uac_device_config_t config = {
         // .output_cb = uac_device_output_cb,
         .output_cb = NULL,
-
         .input_cb = uac_device_input_cb,
         .set_mute_cb = NULL,
         // .set_mute_cb = uac_device_set_mute_cb,
@@ -114,54 +113,24 @@ static void usb_uac_device_init(void) {
         // .set_volume_cb = uac_device_set_volume_cb,
         .cb_ctx = NULL,
     };
+    
     /* Init UAC device, UAC related configurations can be set by the menuconfig */
     ESP_ERROR_CHECK(uac_device_init(&config));
 }
 
 void init_std_rx(void) {
-    // References: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/i2s.html#std-rx-mode
+    // References: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/i2s.htm
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
     
-    // i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    
-    chan_cfg.dma_desc_num = 8;
-    chan_cfg.dma_frame_num = 256; // samples
-    
-    i2s_new_channel(&chan_cfg, NULL, &rx_handle);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &rx_handle));
 
     i2s_std_config_t std_cfg = {
-        // .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_UAC_SAMPLE_RATE),
-        
-        .clk_cfg = {
-            .sample_rate_hz = 48000,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            // .ext_clk_freq_hz = 0,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_384, // I2S_MCLK_MULTIPLE_256/384
-            .bclk_div = 8,
-        },
-
-        // The ICS-43434 is a philips format mic
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_24BIT, I2S_SLOT_MODE_MONO), // MSB/PHILIPS/PCM and bit width can be 16/32 bits
-        
-        // .slot_cfg = {            
-        //     .data_bit_width = I2S_DATA_BIT_WIDTH_24BIT,  // ICS 43434 datasheet
-        //     .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-        //     .slot_mode = I2S_SLOT_MODE_MONO,
-        //     .slot_mask = I2S_STD_SLOT_BOTH,
-        //     .ws_width = I2S_DATA_BIT_WIDTH_24BIT, // ICS 43434 datasheet
-        //     .ws_pol = false,
-        //     .bit_shift = true,
-        //     .left_align = true,
-        //     .big_endian = false,
-        //     .bit_order_lsb = false,
-        // },
-        
-        .gpio_cfg = {
-            
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_UAC_SAMPLE_RATE),
+        // The ICS-43434 is a philips format mic with WS one bit behind DOUT
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO), // MSB/PHILIPS/PCM and bit width can be 16/24/32 bits        
+        .gpio_cfg = {    
             .mclk = I2S_GPIO_UNUSED,
-
             .bclk = MIC_I2S_BCLK,
-            // QUESTION - what about the SEL clock pin? No longer relevant? Do we ties it high or low? SEL is pulled low by default
             .ws = MIC_I2S_WS,
             .dout = I2S_GPIO_UNUSED,
             .din = MIC_I2S_DOUT,     // I2S data
@@ -172,10 +141,12 @@ void init_std_rx(void) {
             },
         },
     };
-    // std_cfg.slot_cfg.slot_mode = I2S_STD_SLOT_LEFT; // single mic
-    // std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO
-    i2s_channel_init_std_mode(rx_handle, &std_cfg);
-    i2s_channel_enable(rx_handle);
+    std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;  // MANDATORILY IMPORTANT as the ICS 43434 expects "There must be 64 SCK cycles in each WS stereo frame"
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+    std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
 }
 
 static void init_pcm_tx(void) {
@@ -213,9 +184,10 @@ void app_main(void) {
     usb_uac_device_init();
 
     // enable the amplifier
-    gpio_reset_pin(SPEAKER_SD_MODE);
-    gpio_set_direction(SPEAKER_SD_MODE, GPIO_MODE_OUTPUT);
-    gpio_set_level(SPEAKER_SD_MODE, 1);
+    
+    // gpio_reset_pin(SPEAKER_SD_MODE);
+    // gpio_set_direction(SPEAKER_SD_MODE, GPIO_MODE_OUTPUT);
+    // gpio_set_level(SPEAKER_SD_MODE, 1);
 
     // Optional code to pull up/down mic SEL for STEREO configuration
     // gpio_reset_pin(MIC_I2S_SEL);
@@ -224,6 +196,6 @@ void app_main(void) {
 
     // Nothing to do here - the USB audio device will take care of everything
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
